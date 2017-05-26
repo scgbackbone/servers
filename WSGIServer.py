@@ -5,12 +5,16 @@ except ImportError:
 	from io import StringIO
 import sys
 from datetime import datetime
+import signal
+import os
+import errno
+
 
 class WSGIServer(object):
 
 	address_family = socket.AF_INET
 	socket_type = socket.SOCK_STREAM
-	request_queue_size = 1
+	request_queue_size = 10
 
 	def __init__(self, server_address):
 		# creating a listening socket 
@@ -25,13 +29,34 @@ class WSGIServer(object):
 
 	def set_app(self, application):
 		self.application = application
-
+		
 	def serve_forever(self):
-		server_socket = self.server_socket
-		while True:
-			self.client_connection, client_address = server_socket.accept()
-			# handle one request and close the client connection - then wait for another connection
-			self.handle_one_request()
+	    def zombie_killer(sig, frame):
+	        while True:
+	            try:
+	                pid, status = os.waitpid(-1, os.WNOHANG)
+	            except OSError:
+	                return
+	            if pid == 0: # no more zombie processes
+	                return
+	    server_socket = self.server_socket
+	    signal.signal(signal.SIGCHLD, zombie_killer)
+	    while True:
+	        try:
+	            self.client_connection, client_address = server_socket.accept()
+	        except IOError as e:
+	            code, msg = e.args
+	            if code == errno.EINTR:
+	                continue
+	            else:
+	                raise
+	        pid = os.fork()
+	        if pid == 0:  # child
+	            server_socket.close()  # close child copy
+	            self.handle_one_request() # handle one request and close the client connection - then wait for another connection
+	            os._exit(0)
+	        else:  # parent
+	            self.client_connection.close()  # close parent copy
 
 	def handle_one_request(self):
 		self.request_data = request_data = self.client_connection.recv(1024).decode()
